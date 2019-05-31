@@ -116,20 +116,15 @@ export default class DfuTransportNoble extends DfuTransportPrn {
                 if (err) {
                     return rej(err);
                 }
-
                 debug('Instantiating noble transport to: ', this.peripheral);
 
-                this.peripheral.discoverServices(['fe59'], (err1, [dfuService]) => {
-                    if (err1) {
-                        return rej(err1);
-                    }
-                    debug('discovered dfuService');
-
-                    dfuService.discoverCharacteristics(null, (err2, characteristics) => {
+                this.peripheral.discoverSomeServicesAndCharacteristics(
+                    ['fe59'],
+                    ['8ec90001f3154f609fb8838830daea50', '8ec90002f3154f609fb8838830daea50'],
+                    (err2, services, characteristics) => {
                         if (err2) {
                             return rej(err2);
                         }
-                        debug('discovered the following characteristics:');
                         for (let i = 0, l = characteristics.length; i < l; i += 1) {
                             debug(`  ${i} uuid: ${characteristics[i].uuid}`);
 
@@ -144,11 +139,11 @@ export default class DfuTransportNoble extends DfuTransportPrn {
                             return res();
                         }
                         return rej(new DfuError(ErrorCode.ERROR_CAN_NOT_DISCOVER_DFU_CONTROL));
-                    });
-                    return undefined;
-                });
+                    }
+                );
                 return undefined;
             });
+            return undefined;
         });
     }
 
