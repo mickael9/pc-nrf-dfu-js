@@ -55,9 +55,11 @@
  * a USB interface of a USB device.
  */
 export default class DfuOperation {
-    constructor(dfuUpdates, dfuTransport, autoStart = false) {
+    constructor(dfuUpdates, dfuTransport, autoStart = false, progressCallback = () => {}) {
         this.updates = dfuUpdates.updates;
         this.transport = dfuTransport;
+        this.onProgress = progressCallback;
+        this.progress = {};
 
         if (autoStart) {
             this.start();
@@ -88,6 +90,13 @@ export default class DfuOperation {
         return this.finishPromise;
     }
 
+    setProgress(progress) {
+        Object.assign(this.progress, progress);
+        if (this.onProgress) {
+            this.onProgress(this.progress);
+        }
+    }
+
     // Takes in an update from this._update, performs it. Returns a Promise
     // which resolves when all updates are done.
     // - Tell the transport to send the init packet
@@ -98,6 +107,19 @@ export default class DfuOperation {
             return Promise.resolve();
         }
 
+        const update = this.updates[updateNumber];
+        const initPacketLength = update.initPacket.length;
+
+        this.setProgress({
+            updateNumber,
+            updateCount: this.updates.length,
+            updateType: update.type,
+            updateInitPacketName: update.initPacketName,
+            updateFirmwareImageName: update.initPacketName,
+            totalBytes: initPacketLength + update.firmwareImage.length,
+            writtenBytes: 0,
+        });
+
         let start;
         if (forceful) {
             start = this.transport.restart();
@@ -106,8 +128,15 @@ export default class DfuOperation {
         }
 
         return start
-            .then(() => this.transport.sendInitPacket(this.updates[updateNumber].initPacket))
-            .then(() => this.transport.sendFirmwareImage(this.updates[updateNumber].firmwareImage))
+            .then(() => this.transport.newUpdate())
+            .then(() => this.transport.sendInitPacket(
+                update.initPacket,
+                written => this.setProgress({ writtenBytes: written })
+            ))
+            .then(() => this.transport.sendFirmwareImage(
+                update.firmwareImage,
+                written => this.setProgress({ writtenBytes: initPacketLength + written })
+            ))
             .then(() => this.performNextUpdate(updateNumber + 1, forceful));
     }
 }

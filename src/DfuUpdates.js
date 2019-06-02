@@ -138,14 +138,22 @@ export default class DfuUpdates {
 
                     debug('Parsed manifest:', manifestJson);
 
-                    const updates = Object.entries(manifestJson).map(([, updateJson]) => {
+                    let updates = ['softdevice_bootloader', 'softdevice', 'bootloader'].filter(x => x in manifestJson);
+
+                    updates = updates.concat(Object.keys(manifestJson)
+                        .filter(x => !updates.includes(x))).map(x => [x, manifestJson[x]]);
+
+                    updates = updates.map(([type, updateJson]) => {
                         const initPacketPromise = zippedFiles.file(updateJson.dat_file).async('uint8array');
                         const firmwareImagePromise = zippedFiles.file(updateJson.bin_file).async('uint8array');
 
                         return Promise.all([initPacketPromise, firmwareImagePromise])
                             .then(([initPacketBytes, firmwareImageBytes]) => ({
+                                type,
                                 initPacket: initPacketBytes,
+                                initPacketName: updateJson.dat_file,
                                 firmwareImage: firmwareImageBytes,
+                                firmwareImageName: updateJson.bin_file,
                             }));
                     });
 

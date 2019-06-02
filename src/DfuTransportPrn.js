@@ -244,15 +244,15 @@ export default class DfuTransportPrn extends DfuAbstractTransport {
                 .then(this.assertPacket(0x01, 0)));
     }
 
-    writeObject(bytes, crcSoFar, offsetSoFar) {
+    writeObject(bytes, crcSoFar, offsetSoFar, progress = () => {}) {
         debug('WriteObject');
         return this.ready().then(() =>
-            this.writeObjectPiece(bytes, crcSoFar, offsetSoFar, 0));
+            this.writeObjectPiece(bytes, crcSoFar, offsetSoFar, 0, progress));
     }
 
     // Sends *one* write operation (with up to this.mtu bytes of un-encoded data)
     // Triggers a counter-based PRN confirmation
-    writeObjectPiece(bytes, crcSoFar, offsetSoFar, prnCount) {
+    writeObjectPiece(bytes, crcSoFar, offsetSoFar, prnCount, progress) {
         return this.ready().then(() => {
             const sendLength = Math.min(this.mtu, bytes.length);
             //             const sendLength = 1; // DEBUG
@@ -274,12 +274,14 @@ export default class DfuTransportPrn extends DfuAbstractTransport {
                         newPrnCount = 0;
                         return this.readCrc().then(([offset, crc]) => {
                             if (newOffsetSoFar === offset && newCrcSoFar === crc) {
+                                progress(newOffsetSoFar);
                                 debug(`PRN checksum OK at offset ${offset} (0x${offset.toString(16)}) (0x${crc.toString(16)})`);
                                 return undefined;
                             }
                             return Promise.reject(new DfuError(ErrorCode.ERROR_CRC_MISMATCH, `CRC mismatch during PRN at byte ${offset}/${newOffsetSoFar}, expected 0x${newCrcSoFar.toString(16)} but got 0x${crc.toString(16)} instead`));
                         });
                     }
+                    progress(newOffsetSoFar);
                     return undefined;
                 })
                 .then(() => {
@@ -287,7 +289,7 @@ export default class DfuTransportPrn extends DfuAbstractTransport {
                     // Send more stuff
                         return this.writeObjectPiece(
                             bytes.subarray(sendLength),
-                            newCrcSoFar, newOffsetSoFar, newPrnCount
+                            newCrcSoFar, newOffsetSoFar, newPrnCount, progress
                         );
                     }
                     return [newOffsetSoFar, newCrcSoFar];

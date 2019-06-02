@@ -54,8 +54,8 @@ const debug = Debug('dfu:noble');
  */
 
 export default class DfuTransportNoble extends DfuTransportPrn {
-    constructor(peripheral, packetReceiveNotification = 16) {
-        super(packetReceiveNotification);
+    constructor(peripheral, packetReceiveNotification = 16, progress = null) {
+        super(packetReceiveNotification, progress);
 
         this.peripheral = peripheral;
 
@@ -76,15 +76,13 @@ export default class DfuTransportNoble extends DfuTransportPrn {
         debug(' ctrl --> ', bytesBuf);
 
         return new Promise((res, rej) => {
-            setTimeout(() => {
-                this.dfuControlCharacteristic.write(bytesBuf, false, err => {
-                    if (err) {
-                        rej(err);
-                    } else {
-                        res();
-                    }
-                });
-            }, 100);
+            this.dfuControlCharacteristic.write(bytesBuf, false, err => {
+                if (err) {
+                    rej(err);
+                } else {
+                    res();
+                }
+            });
         });
     }
 
@@ -104,53 +102,46 @@ export default class DfuTransportNoble extends DfuTransportPrn {
                     res();
                 }
             });
-            //             }, 50);
         });
     }
 
     // Aux. Connects to this.peripheral, discovers services and characteristics,
     // and stores a reference into this.dfuControlCharacteristic and this.dfuPacketCharacteristic
     getCharacteristics() {
-        return new Promise((res, rej) => {
-            this.peripheral.connect(err => {
-                if (err) {
-                    return rej(err);
-                }
-                debug('Instantiating noble transport to: ', this.peripheral);
+        return Promise.resolve().then(() => {
+            debug('Connecting to: ', this.peripheral);
+            if (this.peripheral.state !== 'disconnected') {
+                return this.peripheral.disconnect();
+            }
+            return null;
+        })
+            .then(() => this.peripheral.connect())
+            .then(() => this.peripheral.discoverSomeServicesAndCharacteristics(
+                ['fe59'],
+                ['8ec90001f3154f609fb8838830daea50', '8ec90002f3154f609fb8838830daea50']
+            ))
+            .then(({ characteristics }) => {
+                for (let i = 0, l = characteristics.length; i < l; i += 1) {
+                    debug(`  ${i} uuid: ${characteristics[i].uuid}`);
 
-                this.peripheral.discoverSomeServicesAndCharacteristics(
-                    ['fe59'],
-                    ['8ec90001f3154f609fb8838830daea50', '8ec90002f3154f609fb8838830daea50'],
-                    (err2, services, characteristics) => {
-                        if (err2) {
-                            return rej(err2);
-                        }
-                        for (let i = 0, l = characteristics.length; i < l; i += 1) {
-                            debug(`  ${i} uuid: ${characteristics[i].uuid}`);
-
-                            if (characteristics[i].uuid === '8ec90001f3154f609fb8838830daea50') {
-                                this.dfuControlCharacteristic = characteristics[i];
-                            }
-                            if (characteristics[i].uuid === '8ec90002f3154f609fb8838830daea50') {
-                                this.dfuPacketCharacteristic = characteristics[i];
-                            }
-                        }
-                        if (this.dfuControlCharacteristic && this.dfuPacketCharacteristic) {
-                            return res();
-                        }
-                        return rej(new DfuError(ErrorCode.ERROR_CAN_NOT_DISCOVER_DFU_CONTROL));
+                    if (characteristics[i].uuid === '8ec90001f3154f609fb8838830daea50') {
+                        this.dfuControlCharacteristic = characteristics[i];
                     }
-                );
-                return undefined;
+                    if (characteristics[i].uuid === '8ec90002f3154f609fb8838830daea50') {
+                        this.dfuPacketCharacteristic = characteristics[i];
+                    }
+                }
+                if (this.dfuControlCharacteristic && this.dfuPacketCharacteristic) {
+                    return;
+                }
+                throw new DfuError(ErrorCode.ERROR_CAN_NOT_DISCOVER_DFU_CONTROL);
             });
-            return undefined;
-        });
     }
 
     // Opens the port, sets the PRN, requests the MTU.
     // Returns a Promise when initialization is done.
     ready() {
-        if (this.readyPromise) {
+        if (this.readyPromise && this.peripheral.state === 'connected') {
             return this.readyPromise;
         }
 
@@ -159,7 +150,7 @@ export default class DfuTransportNoble extends DfuTransportPrn {
             new Promise((res, rej) => {
                 setTimeout(
                     () => rej(new DfuError(ErrorCode.ERROR_TIMEOUT_FETCHING_CHARACTERISTICS)),
-                    500
+                    1000
                 );
             }),
         ])
@@ -191,5 +182,9 @@ export default class DfuTransportNoble extends DfuTransportPrn {
                     .then(this.assertPacket(0x02, 0)));
 
         return this.readyPromise;
+    }
+
+    newUpdate() {
+        return Promise.resolve();
     }
 }

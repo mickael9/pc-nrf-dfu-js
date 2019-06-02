@@ -75,20 +75,19 @@ export default class DfuAbstractTransport {
 
     // Given a Uint8Array, sends it as an init payload / "command object".
     // Returns a Promise.
-    sendInitPacket(bytes) {
-        return this.sendPayload(0x01, bytes);
+    sendInitPacket(bytes, progress) {
+        return this.sendPayload(0x01, bytes, progress);
     }
 
     // Given a Uint8Array, sends it as the main payload / "data object".
     // Returns a Promise.
-    sendFirmwareImage(bytes) {
-        return this.sendPayload(0x02, bytes);
+    sendFirmwareImage(bytes, progress) {
+        return this.sendPayload(0x02, bytes, progress);
     }
-
 
     // Sends either a init payload ("init packet"/"command object") or a data payload
     // ("firmware image"/"data objects")
-    sendPayload(type, bytes, resumeAtChunkBoundary = false) {
+    sendPayload(type, bytes, progress = () => {}, resumeAtChunkBoundary = false) {
         debug(`Sending payload of type ${type}`);
         return this.selectObject(type).then(([offset, crcSoFar, chunkSize]) => {
             if (offset !== 0) {
@@ -97,13 +96,14 @@ export default class DfuAbstractTransport {
 
                 if (crc === crcSoFar) {
                     debug('CRC match');
+                    progress(offset);
                     if (offset === bytes.length) {
                         debug('Payload already transferred sucessfully, sending execute command just in case.');
 
                         // Send an exec command, just in case the previous connection broke
                         // just before the exec command. An extra exec command will have no
                         // effect.
-                        return this.executeObject(type, chunkSize);
+                        return this.executeObject();
                     }
                     if ((offset % chunkSize) === 0 && !resumeAtChunkBoundary) {
                         // Edge case: when an exact multiple of the chunk size has
@@ -114,8 +114,8 @@ export default class DfuAbstractTransport {
                         // and yet receive an "OK" response code.
                         debug('Edge case: payload transferred up to page boundary; previous execute command might have been lost, re-sending.');
 
-                        return this.executeObject(type, chunkSize)
-                            .then(() => this.sendPayload(type, bytes, true));
+                        return this.executeObject()
+                            .then(() => this.sendPayload(type, bytes, progress, true));
                     }
                     debug(`Payload partially transferred sucessfully, continuing from offset ${offset}.`);
 
@@ -124,7 +124,7 @@ export default class DfuAbstractTransport {
 
                     return this.sendAndExecutePayloadChunk(
                         type, bytes, offset,
-                        end, chunkSize, crc
+                        end, chunkSize, progress, crc
                     );
                 }
 
@@ -140,7 +140,10 @@ export default class DfuAbstractTransport {
             const end = Math.min(bytes.length, chunkSize);
 
             return this.createObject(type, end)
-                .then(() => this.sendAndExecutePayloadChunk(type, bytes, 0, end, chunkSize));
+                .then(() => this.sendAndExecutePayloadChunk(
+                    type, bytes, 0, end, chunkSize,
+                    progress
+                ));
         });
     }
 
@@ -151,8 +154,8 @@ export default class DfuAbstractTransport {
     // - Writing the payload chunk (wire implementation might perform fragmentation)
     // - Check CRC32 and offset of payload so far
     // - Execute the payload chunk (target might write a flash page)
-    sendAndExecutePayloadChunk(type, bytes, start, end, chunkSize, crcSoFar = undefined) {
-        return this.sendPayloadChunk(type, bytes, start, end, chunkSize, crcSoFar)
+    sendAndExecutePayloadChunk(type, bytes, start, end, chunkSize, progress, crcSoFar = undefined) {
+        return this.sendPayloadChunk(type, bytes, start, end, chunkSize, progress, crcSoFar)
             .then(() => this.executeObject())
             .then(() => {
                 if (end >= bytes.length) {
@@ -165,7 +168,7 @@ export default class DfuAbstractTransport {
 
                 return this.createObject(type, nextEnd - end)
                     .then(() => this.sendAndExecutePayloadChunk(
-                        type, bytes, end, nextEnd, chunkSize,
+                        type, bytes, end, nextEnd, chunkSize, progress,
                         crc32(bytes.subarray(0, end))
                     ));
             });
@@ -175,11 +178,11 @@ export default class DfuAbstractTransport {
     // This is done without checksums nor sending the "execute" command. The reason
     // for splitting this code apart is that retrying a chunk is easier when abstracting away
     // the "execute" and "next chunk" logic
-    sendPayloadChunk(type, bytes, start, end, chunkSize, crcSoFar = undefined, retries = 0) {
+    sendPayloadChunk(type, bytes, start, end, chunkSize, progress, crcSoFar, retries = 0) {
         const subarray = bytes.subarray(start, end);
         const crcAtChunkEnd = crc32(subarray, crcSoFar);
 
-        return this.writeObject(subarray, crcSoFar, start)
+        return this.writeObject(subarray, crcSoFar, start, progress)
             .then(() => {
                 debug('Payload type fully transferred, requesting explicit checksum');
                 return this.crcObject(end, crcAtChunkEnd);
@@ -208,10 +211,12 @@ export default class DfuAbstractTransport {
                 // Rewind to the start of the block
                 const rewoundCrc = newStart === 0 ? undefined : crc32(bytes.subarray(0, newStart));
 
+                console.log("newStart:", newStart);
+
                 return this.createObject(type, end - start)
                     .then(() => this.sendPayloadChunk(
                         type, bytes, newStart, end,
-                        chunkSize, rewoundCrc, retries + 1
+                        chunkSize, progress, rewoundCrc, retries + 1
                     ));
             });
     }
@@ -236,9 +241,10 @@ export default class DfuAbstractTransport {
     // checksummed (and the return value for those checks involves both the absolute
     // offset and the CRC32 value). Note that the CRC and offset are not part of the
     // SDK implementation.
+    // Progress is a callback with one argument (total number bytes written so far)
     // Must return a Promise to an array of [offset, crc]
     // Actual implementation must be provided by concrete subclasses of DfuAbstractTransport.
-    writeObject(bytes, crcSoFar, offsetSoFar) {}
+    writeObject(bytes, crcSoFar, offsetSoFar, progress) {}
 
     // Trigger a CRC calculation of the data sent so far.
     // Must return a Promise to an array of [offset, crc]
@@ -262,4 +268,10 @@ export default class DfuAbstractTransport {
 
     // Abort bootloader mode and try to switch back to app mode
     abortObject() {}
+
+    // Called at the start of a new update (including the first one)
+    // This can be used to (re)establish a connection that has been lost due to a reboot
+    // Must return a Promise
+    // Actual implementation must be provided by concrete subclasses of DfuAbstractTransport.
+    newUpdate() {}
 }
