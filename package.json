@@ -17,7 +17,7 @@
   "dependencies": {
     "jszip": "^3.1.4"
   },
-  "peerDependencies": {
+  "optionalDependencies": {
     "serialport": "^6.2.0"
   },
   "devDependencies": {
